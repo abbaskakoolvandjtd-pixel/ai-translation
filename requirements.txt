@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+pyodbc
+pandas
+openai
+Pillow
+python_dotenv
+pyjwt
+tiktoken
+PyMuPDF
+json-repair
+gunicorn
