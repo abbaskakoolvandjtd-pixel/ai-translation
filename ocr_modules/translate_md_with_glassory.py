@@ -6,25 +6,28 @@ import time
 import difflib
 import threading
 import concurrent.futures
+import logging
 from openai import OpenAI
 from typing import List, Dict, Any, Optional
 from collections import Counter
 
 from openai.types.shared_params import reasoning_effort
 from shared_functions import count_tokens  # Your existing PyODBC connection function
-
+from core.utils import TranslationConfig
 from core.db import update_job_status
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-BASE_URL = "http://10.19.24.49:5090/v1"
-API_KEY = "sk-N_j-qpRiMdEcN1bRhmnNiA"  # Must match config.yaml master_key
+BASE_URL = getattr(TranslationConfig, "TRANSLATION_BASE_URL", "http://10.19.24.49:5090/v1")
+API_KEY = getattr(TranslationConfig, "TRANSLATION_API_KEY", None)
+if not API_KEY:
+    raise ValueError("TRANSLATION_API_KEY must be set in environment variables or .env file")
 
-MAX_OUTPUT_TOKENS = 30000
-INPUT_JSON = r"E:\Kakoolvand\pycharm_projects\markitdown_project\WDR 2026 Overview Booklet.json"
-OUTPUT_JSON = r"E:\Kakoolvand\pycharm_projects\markitdown_project\unlimited_ocr_output_files\WDR 2026 Overview Booklet_persian.json"
-MAX_CHUNK_TOKENS = 15000  # Dynamic chunking limit based on tokens
+MAX_OUTPUT_TOKENS = int(getattr(TranslationConfig, "TRANSLATION_MAX_OUTPUT_TOKENS", 30000))
+MAX_CHUNK_TOKENS = int(getattr(TranslationConfig, "TRANSLATION_MAX_CHUNK_TOKENS", 15000))
 
 # Initialize OpenAI client for local server
 client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
@@ -68,7 +71,7 @@ def call_llm(system_prompt: str, user_prompt: str, max_retries: int = 5) -> str:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    print("input tokens=",count_tokens(str(messages)))
+    logger.info("input tokens=",count_tokens(str(messages)))
 
     last_exception = None
     for attempt in range(max_retries + 1):
@@ -104,7 +107,7 @@ def call_llm(system_prompt: str, user_prompt: str, max_retries: int = 5) -> str:
 
         except Exception as e:
             last_exception = e
-            print(f"❌ LLM Error (Attempt {attempt + 1}/{max_retries + 1}): {e}")
+            logger.info(f"❌ LLM Error (Attempt {attempt + 1}/{max_retries + 1}): {e}")
             if attempt < max_retries:
                 time.sleep(2)
 
@@ -150,7 +153,7 @@ def parse_json_response(raw_content: str) -> Any:
         except Exception:
             pass
 
-    print(f"Warning: Failed to parse JSON from LLM response.")
+    logger.info(f"Warning: Failed to parse JSON from LLM response.")
     return None
 
 
@@ -186,7 +189,7 @@ class TranslationPipeline:
         self.lock = threading.Lock()
 
     def load_data(self):
-        print("Loading JSON data...")
+        logger.info("Loading JSON data...")
         with open(self.input_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
@@ -204,7 +207,7 @@ class TranslationPipeline:
                     obj["skip_translation"] = False
                     self.objects.append(obj)
                 obj_id += 1
-        print(f"Loaded {len(self.objects)} translatable objects.")
+        logger.info(f"Loaded {len(self.objects)} translatable objects.")
 
     def normalize_text(self, text: str) -> str:
         return re.sub(r'\s+', ' ', text.strip().lower())
@@ -228,7 +231,7 @@ class TranslationPipeline:
 
     def merge_split_headers_llm(self, max_workers=1):
         """Uses LLM with a 3-page sliding window to detect and merge split headers."""
-        print(f"Merging split multi-line headers using LLM (workers: {max_workers})...")
+        logger.info(f"Merging split multi-line headers using LLM (workers: {max_workers})...")
         pages_dict = {}
         for obj in self.objects:
             p = obj.get("page_internal")
@@ -285,14 +288,14 @@ If no split headers are found, return an empty array: []"""
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(process_task, task) for task in tasks]
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                    print(f"progress: {int(100 * (i + 1) / len(tasks))}%")
+                    logger.info(f"progress: {int(100 * (i + 1) / len(tasks))}%")
                     if self.job_id:
                         update_job_status(self.job_id, "TRANSLATING",
                                           status_detail=f"""در حال ترجمه فایل   /   ادغام عناوین ({int(100 * (i + 1) / len(tasks))}٪)""")
                     res = future.result()
                     if res: results.append(res)
                     if (i + 1) % 10 == 0 or (i + 1) == len(tasks):
-                        print(f"  -> Header merge LLM calls progress: {int(100 * (i + 1) / len(tasks))}%")
+                        logger.info(f"  -> Header merge LLM calls progress: {int(100 * (i + 1) / len(tasks))}%")
         else:
             for i, task in enumerate(tasks):
                 res = process_task(task)
@@ -330,11 +333,11 @@ If no split headers are found, return an empty array: []"""
                             absorbed_obj["skip_translation"] = True
                             absorbed_obj["merged_into"] = p_id
 
-        print(f"Applied {len(processed_primary_ids)} header merges.")
+        logger.info(f"Applied {len(processed_primary_ids)} header merges.")
 
     def merge_split_paragraphs_llm(self, max_workers=1):
         """Uses LLM to detect and merge body paragraphs that are split across objects or pages."""
-        print(f"Merging split paragraphs across objects/pages using LLM (workers: {max_workers})...")
+        logger.info(f"Merging split paragraphs across objects/pages using LLM (workers: {max_workers})...")
 
         system_prompt = """# ROLE
 You are an expert Document Layout Analyzer and OCR Post-Processing Specialist.
@@ -378,14 +381,14 @@ If no split paragraphs are found, return an empty array: []"""
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(process_task, task) for task in tasks]
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                    print(f"progress: {int(100 * (i + 1) / len(tasks))}%")
+                    logger.info(f"progress: {int(100 * (i + 1) / len(tasks))}%")
                     if self.job_id:
                         update_job_status(self.job_id, "TRANSLATING",
                                           status_detail=f"""در حال ترجمه فایل   /   ادغام پاراگراف ها ({int(100 * (i + 1) / len(tasks))}٪)""")
                     res = future.result()
                     if res: results.append(res)
                     if (i + 1) % 10 == 0 or (i + 1) == len(tasks):
-                        print(f"  -> Paragraph merge LLM calls progress: {int(100 * (i + 1) / len(tasks))}%")
+                        logger.info(f"  -> Paragraph merge LLM calls progress: {int(100 * (i + 1) / len(tasks))}%")
         else:
             for i, task in enumerate(tasks):
                 res = process_task(task)
@@ -420,10 +423,10 @@ If no split paragraphs are found, return an empty array: []"""
                         absorbed_obj["skip_translation"] = True
                         absorbed_obj["merged_into"] = p_id
 
-        print(f"Applied {len(processed_primary_ids)} paragraph merges.")
+        logger.info(f"Applied {len(processed_primary_ids)} paragraph merges.")
 
     def extract_glossary(self):
-        print("Extracting initial glossary...")
+        logger.info("Extracting initial glossary...")
         if self.job_id:
             update_job_status(self.job_id, "TRANSLATING",
                               status_detail=f"""در حال ترجمه فایل   /   در حال ایجاد واژه‌نامه برای لغات تخصصی...""")
@@ -462,7 +465,7 @@ Schema: [{"en": "<English term>", "fa": "<Persian translation>"}]"""
             for item in _flatten_to_dicts(parsed):
                 if "en" in item and "fa" in item:
                     self.glossary[item["en"].strip().lower()] = item["fa"]
-        print(f"Initial Glossary extracted: {len(self.glossary)} terms.")
+        logger.info(f"Initial Glossary extracted: {len(self.glossary)} terms.")
 
     def extract_chunk_glossary(self, chunk_texts: List[str]):
         """Extracts 5-10 new glossary terms from the current chunk, avoiding duplicates."""
@@ -513,7 +516,7 @@ Schema: [{"en": "<English term>", "fa": "<Persian translation>"}]"""
                             self.glossary[en_term] = item["fa"]
                             new_terms_count += 1
                 if new_terms_count > 0:
-                    print(f"  -> Added {new_terms_count} new terms to glossary from current chunk.")
+                    logger.info(f"  -> Added {new_terms_count} new terms to glossary from current chunk.")
 
     def chunk_and_translate(self, objs, system_prompt, context_type="body", max_workers=1):
         """Handles exact match deduplication and dynamic token-based chunking."""
@@ -554,13 +557,13 @@ Schema: [{"en": "<English term>", "fa": "<Persian translation>"}]"""
         def process_chunk(chunk):
             self._process_llm_chunk(chunk, system_prompt, context_type)
 
-        print(f"Translating {len(chunks)} chunks of {context_type} with {max_workers} workers...")
+        logger.info(f"Translating {len(chunks)} chunks of {context_type} with {max_workers} workers...")
 
         if max_workers > 1 and len(chunks) > 1:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                    print(f"progress: {int(100 * (i + 1) / len(chunks))}%")
+                    logger.info(f"progress: {int(100 * (i + 1) / len(chunks))}%")
                     if self.job_id:
                         if context_type == "body":
                             text_status = "متن اصلی"
@@ -572,11 +575,11 @@ Schema: [{"en": "<English term>", "fa": "<Persian translation>"}]"""
                         update_job_status(self.job_id, "TRANSLATING",
                                           status_detail=f"""در حال ترجمه فایل   /   ترجمه {text_status} ({int(100 * (i + 1) / len(chunks))}٪)""")
                     future.result()
-                    print(f"  -> {context_type.capitalize()} translation progress: {int(100 * (i + 1) / len(chunks))}%")
+                    logger.info(f"  -> {context_type.capitalize()} translation progress: {int(100 * (i + 1) / len(chunks))}%")
         else:
             for i, chunk in enumerate(chunks):
                 process_chunk(chunk)
-                print(f"  -> {context_type.capitalize()} translation progress: {int(100 * (i + 1) / len(chunks))}%")
+                logger.info(f"  -> {context_type.capitalize()} translation progress: {int(100 * (i + 1) / len(chunks))}%")
 
     def _process_llm_chunk(self, chunk, system_prompt, context_type):
         if context_type == "body":
@@ -650,7 +653,7 @@ Schema: [{"en": "<English term>", "fa": "<Persian translation>"}]"""
         # --- RETRY LOGIC FOR SKIPPED IDS ---
         missing_objs = [obj for obj in chunk if obj["obj_id"] not in translated_ids]
         if missing_objs:
-            print(f"  -> Warning: LLM skipped {len(missing_objs)} IDs (likely captions/tables). Retrying...")
+            logger.info(f"  -> Warning: LLM skipped {len(missing_objs)} IDs (likely captions/tables). Retrying...")
             missing_segments = "\n".join([f"ID: {obj['obj_id']} | Content: {obj['content']}" for obj in missing_objs])
             retry_prompt = f"""CRITICAL: You missed translating the following segments in your previous response. 
 Translate them NOW into Persian and output ONLY the valid JSON array. Ensure HTML tags and quotes are perfectly preserved and escaped.
@@ -675,7 +678,7 @@ Translate them NOW into Persian and output ONLY the valid JSON array. Ensure HTM
                                     self.headings_tm[self.normalize_text(orig["content"])] = trans
 
     def translate_headings(self, max_workers=1):
-        print("Translating headings...")
+        logger.info("Translating headings...")
         system_prompt = """# ROLE
 You are an expert English-to-Persian Translator specializing in formal business and technical documents.
 
@@ -704,7 +707,7 @@ Schema: [{"id": <int>, "translated": "<Persian text>"}]"""
             self.section_map[obj["obj_id"]] = current_section
 
     def translate_toc(self, max_workers=1):
-        print("Translating Table of Contents...")
+        logger.info("Translating Table of Contents...")
         if self.job_id:
             update_job_status(self.job_id, "TRANSLATING",
                               status_detail=f"""در حال ترجمه فایل   /   ترجمه فهرست مطالب... """)
@@ -737,7 +740,7 @@ Schema: [{"id": <int>, "translated": "<Persian text>"}]"""
         self.chunk_and_translate(toc_objs, system_prompt, context_type="toc", max_workers=max_workers)
 
     def translate_body(self, max_workers=1):
-        print("Translating body paragraphs...")
+        logger.info("Translating body paragraphs...")
         toc_ids = set(obj["obj_id"] for obj in self.objects if "translated_content" in obj)
         body_objs = [obj for obj in self.objects if
                      (obj.get("type") == "text" or obj.get("type") == "image_footnote" or obj.get(
@@ -770,7 +773,7 @@ Schema: [{"id": <int>, "translated": "<Persian text>"}]"""
         self.chunk_and_translate(body_objs, system_prompt, context_type="body", max_workers=max_workers)
 
     def reconstruct_and_save(self):
-        print("Reconstructing JSON...")
+        logger.info("Reconstructing JSON...")
         if self.job_id:
             update_job_status(self.job_id, "TRANSLATING",
                               status_detail=f"""در حال ترجمه فایل   /   ذخیره‌سازی نتایج ترجمه... """)
@@ -792,7 +795,7 @@ Schema: [{"id": <int>, "translated": "<Persian text>"}]"""
 
         with open(self.output_path, 'w', encoding='utf-8') as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
-        print(f"Successfully saved translated JSON to {self.output_path}")
+        logger.info(f"Successfully saved translated JSON to {self.output_path}")
 
     def _format_elapsed(self, seconds_int: int) -> str:
         """Convert a duration in seconds to a human‑readable Hh Mm Ss.s string."""
@@ -814,58 +817,58 @@ Schema: [{"id": <int>, "translated": "<Persian text>"}]"""
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"load_data time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"load_data time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
         tic = time.time()
         self.merge_split_headers_llm(max_workers=self.workers_merge_headers)
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"merge_split_headers_llm time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"merge_split_headers_llm time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
         tic = time.time()
         self.merge_split_paragraphs_llm(max_workers=self.workers_merge_paragraphs)
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"merge_split_paragraphs_llm time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"merge_split_paragraphs_llm time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
         tic = time.time()
         self.extract_glossary()
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"extract_glossary time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"extract_glossary time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
         tic = time.time()
         self.translate_headings(max_workers=self.workers_translate_headings)
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"translate_headings time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"translate_headings time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
         tic = time.time()
         self.translate_toc(max_workers=self.workers_translate_toc)
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"translate_toc time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"translate_toc time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
         tic = time.time()
         self.translate_body(max_workers=self.workers_translate_body)
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"translate_body time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"translate_body time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
         tic = time.time()
         self.reconstruct_and_save()
         toc = time.time()
         load_elapsed = int(toc - tic)
         total_time += load_elapsed
-        print(f"reconstruct_and_save time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
+        logger.info(f"reconstruct_and_save time: {self._format_elapsed(load_elapsed)} / total seconds: {load_elapsed}")
 
-        print(f"Total process time: {self._format_elapsed(total_time)} / total seconds: {total_time}")
+        logger.info(f"Total process time: {self._format_elapsed(total_time)} / total seconds: {total_time}")
 
 
 # ==============================================================================
@@ -873,7 +876,7 @@ Schema: [{"id": <int>, "translated": "<Persian text>"}]"""
 # ==============================================================================
 if __name__ == "__main__":
     if not os.path.exists(INPUT_JSON):
-        print(f"Error: {INPUT_JSON} not found. Please place your OCR output JSON in the same directory.")
+        logger.info(f"Error: {INPUT_JSON} not found. Please place your OCR output JSON in the same directory.")
     else:
         pipeline = TranslationPipeline(
             INPUT_JSON,

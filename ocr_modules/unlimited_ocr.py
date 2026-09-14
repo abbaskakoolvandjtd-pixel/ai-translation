@@ -12,12 +12,14 @@ Optimizations for Highest Accuracy & Memory Management:
 pip install openai PyMuPDF Pillow
 """
 
+import os
 import re
 import sys
 import json
 import time
 import base64
 import gc  # <-- Garbage collection to free memory between pages
+import logging
 import fitz  # PyMuPDF
 from pathlib import Path
 from io import BytesIO
@@ -26,23 +28,25 @@ from openai import OpenAI
 from html.parser import HTMLParser
 
 from core.db import update_job_status
+from core.utils import TranslationConfig
+
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
 # Config (Optimized for Maximum Precision)
 # ──────────────────────────────────────────────
-VLLM_URL      = "http://10.19.24.49:5090/v1"
-MODEL_NAME    = "unlimited-ocr"
-PDF_PATH      = "../WDR 2026 Overview Booklet.pdf"
-OUTPUT_MD     = PDF_PATH.rsplit(".", 1)[0] + ".md"
-OUTPUT_JSON   = PDF_PATH.rsplit(".", 1)[0] + ".json"
-IMAGES_DIR    = PDF_PATH.rsplit(".", 1)[0] + "_images"
-DEBUG_DIR     = PDF_PATH.rsplit(".", 1)[0] + "_debug"   # annotated pages
-DPI           = 600  # High DPI for maximum character clarity
-MAX_TOKENS    = 10000 # Extremely high limit to prevent single-page truncation
-BATCH_SIZE    = 1     # FORCE single-page processing for max accuracy
-DEBUG         = False  # save annotated pages with bboxes drawn
+VLLM_URL = getattr(TranslationConfig, "VLLM_URL", "http://10.19.24.49:5090/v1")
+API_KEY = getattr(TranslationConfig, "VLLM_API_KEY", None)
+if not API_KEY:
+    raise ValueError("VLLM_API_KEY must be set in environment variables or .env file")
+    
+MODEL_NAME = getattr(TranslationConfig, "OCR_MODEL_NAME", "unlimited-ocr")
+DPI = int(getattr(TranslationConfig, "OCR_DPI", 600))
+MAX_TOKENS = int(getattr(TranslationConfig, "OCR_MAX_TOKENS", 10000))
+BATCH_SIZE = int(getattr(TranslationConfig, "OCR_BATCH_SIZE", 1))
+DEBUG = getattr(TranslationConfig, "OCR_DEBUG", False)
 
-client = OpenAI(api_key="sk-N_j-qpRiMdEcN1bRhmnNiA", base_url=VLLM_URL, timeout=3600)
+client = OpenAI(api_key=API_KEY, base_url=VLLM_URL, timeout=3600)
 
 
 # ══════════════════════════════════════════════
@@ -384,7 +388,7 @@ def ocr_page(image_b64: str, prompt: str, window_size: int) -> str:
     )
 
     raw_text = response.choices[0].message.content
-    print(raw_text)
+    logger.info(raw_text)
     return raw_text if raw_text else ""
 
 
@@ -396,11 +400,11 @@ def process_pdf(pdf_path: str,job_id=None) -> dict:
     Executes the full OCR → Markdown/JSON pipeline for *pdf_path*.
     Refactored to process one page at a time to prevent RAM exhaustion.
     """
-    print(f"📄 Converting {pdf_path} → images (dpi={DPI}) ...")
+    logger.info(f"📄 Converting {pdf_path} → images (dpi={DPI}) ...")
     doc = fitz.open(pdf_path)
     n_pages = len(doc)
 
-    print(f"   {n_pages} page(s) → Processing 1 page per API call for MAXIMUM PRECISION\n")
+    logger.info(f"   {n_pages} page(s) → Processing 1 page per API call for MAXIMUM PRECISION\n")
 
     images_dir = Path(IMAGES_DIR)
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -426,9 +430,9 @@ def process_pdf(pdf_path: str,job_id=None) -> dict:
         if DEBUG:
             pix.save(temp_dir / f"page_{page_idx:04d}.png")
 
-        print(f"\n{'═' * 60}")
-        print(f"🚀 Processing Page {page_idx + 1} of {n_pages} (Global Index: {page_idx})")
-        print(f"{'═' * 60}\n")
+        logger.info(f"\n{'═' * 60}")
+        logger.info(f"🚀 Processing Page {page_idx + 1} of {n_pages} (Global Index: {page_idx})")
+        logger.info(f"{'═' * 60}\n")
         percentage=int(100*((page_idx + 1)/n_pages))
         if job_id:
             update_job_status(job_id, "OCR_PROCESSING", status_detail=f"""در حال OCR فایل  /   صفحه {page_idx + 1} از {n_pages} صفحه ({percentage}٪)""")
@@ -442,7 +446,7 @@ def process_pdf(pdf_path: str,job_id=None) -> dict:
         except Exception as ocr_err:
             # 🔥 Update DB with the exact error and page number before crashing
             error_msg = f"OCR LLM failed on page {page_idx + 1}/{n_pages}. Error: {str(ocr_err)}"
-            print(f"❌ {error_msg}")
+            logger.error(f"{error_msg}")
             if job_id:
                 # This will immediately set the DB state to FAILED via the executor's catch block,
                 # but we update the detail here for better logging in the DB.
@@ -451,7 +455,7 @@ def process_pdf(pdf_path: str,job_id=None) -> dict:
 
         elapsed = time.time() - t0
         total_time += elapsed
-        print(f"\n⏱  {elapsed:.1f}s  |  {len(raw)} chars raw")
+        logger.info(f"\n⏱  {elapsed:.1f}s  |  {len(raw)} chars raw")
 
         page_blocks = parse_raw_ocr(raw, page_offset=page_idx)
 
@@ -472,7 +476,7 @@ def process_pdf(pdf_path: str,job_id=None) -> dict:
                 blk["image_file"] = None
 
         all_blocks.extend(page_blocks)
-        print(f"   → {len(page_blocks)} blocks parsed")
+        logger.info(f"   → {len(page_blocks)} blocks parsed")
 
         # Critical Step: Free memory from pixmap before moving to the next page
         del pix
@@ -480,15 +484,15 @@ def process_pdf(pdf_path: str,job_id=None) -> dict:
 
     doc.close()
 
-    print(f"\n{'─' * 60}")
-    print(f"📊 Total: {len(all_blocks)} blocks, "
+    logger.info(f"\n{'─' * 60}")
+    logger.info(f"📊 Total: {len(all_blocks)} blocks, "
           f"{max((b['page'] for b in all_blocks), default=-1) + 1} pages, "
           f"{total_time:.1f}s total processing time")
 
     debug_dir = None
     if DEBUG:
         debug_dir = Path(DEBUG_DIR)
-        print(f"\n🔍 Saving debug annotations → {debug_dir}/")
+        logger.info(f"\n🔍 Saving debug annotations → {debug_dir}/")
         pages_with_blocks: dict[int, list] = {}
         for blk in all_blocks:
             pages_with_blocks.setdefault(blk["page"], []).append(blk)
@@ -496,7 +500,7 @@ def process_pdf(pdf_path: str,job_id=None) -> dict:
             debug_img_path = temp_dir / f"page_{pg_idx:04d}.png"
             if debug_img_path.exists():
                 out = save_debug_page(debug_img_path, blks, pg_idx, debug_dir)
-                print(f"   page {pg_idx}: {len(blks)} objects → {out.name}")
+                logger.info(f"page {pg_idx}: {len(blks)} objects → {out.name}")
 
     markdown = blocks_to_markdown(all_blocks, images_dir)
     json_out = blocks_to_json(all_blocks)
@@ -532,22 +536,22 @@ def main(pdf_path=None):
     # Persist Markdown
     Path(OUTPUT_MD).write_text(result["markdown"], encoding="utf-8")
     n_imgs = len(list(result["images_dir"].glob("*.png")))
-    print(f"\n💾 Markdown → {OUTPUT_MD}  ({len(result['markdown'])} chars, {n_imgs} images)")
+    logger.info(f"\n💾 Markdown → {OUTPUT_MD}  ({len(result['markdown'])} chars, {n_imgs} images)")
 
     # Persist JSON
     Path(OUTPUT_JSON).write_text(
         json.dumps(result["json"], indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print(f"💾 JSON     → {OUTPUT_JSON}  "
+    logger.info(f"💾 JSON     → {OUTPUT_JSON}  "
           f"({result['json']['total_objects']} objects, "
           f"{result['json']['total_pages']} pages)")
 
-    print("\n✅ Done!")
+    logger.info("\n✅ Done!")
 
 
 if __name__ == "__main__":
     tic = time.time()
     main()
     toc = time.time()
-    print(f"Total elapsed time: {int(toc-tic)}s")
+    logger.info(f"Total elapsed time: {int(toc-tic)}s")
 
