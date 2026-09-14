@@ -249,17 +249,23 @@ WHERE (Status IN ('FAILED', 'ERROR')
 AND UpdatedAt < DATEADD(hour, ?, GETDATE())) or (Status not IN ('COMPLETED','FAILED', 'ERROR'))
     """
 
-    # --- Example implementation using pyodbc (adjust to your actual DB connection logic) ---
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(query, (timeout_hours,))
-    columns = [column[0] for column in cursor.description]
-    results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    cursor.close()
-    conn.close()
-    return results
-
-    raise NotImplementedError("Implement this using your existing DB connection logic.")
+    conn = None
+    cursor = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, (timeout_hours,))
+        columns = [column[0] for column in cursor.description]
+        results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return results
+    except Exception as e:
+        logger.error(f"Error fetching stuck jobs: {e}")
+        raise
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
 
 
 def reset_job_to_pending(job_id):
@@ -274,12 +280,18 @@ def reset_job_to_pending(job_id):
         WHERE JobID = ?
     """
 
-    # --- Example implementation using pyodbc ---
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(query, (job_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    raise NotImplementedError("Implement this using your existing DB connection logic.")
+    conn = None
+    cursor = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, (job_id,))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error resetting job {job_id} to PENDING: {e}")
+        raise
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()

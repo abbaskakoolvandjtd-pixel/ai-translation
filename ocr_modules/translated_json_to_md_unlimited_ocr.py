@@ -374,25 +374,25 @@ def run_json_to_md(
         raise FileNotFoundError(f"JSON not found: {json_path}")
 
     # Load JSON
-    print(f"📂 Loading {json_path} ...")
+    logger.info(f"📂 Loading {json_path} ...")
     with json_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     total_pages   = data.get("total_pages", 0)
     total_objects = data.get("total_objects", 0)
-    print(f"   {total_pages} pages, {total_objects} objects")
+    logger.info(f"   {total_pages} pages, {total_objects} objects")
 
     # Open PDF (optional)
     pdf_doc = None
     if pdf_path:
         pdf_path = Path(pdf_path)
         if not pdf_path.exists():
-            print(f"⚠️  PDF not found: {pdf_path} — images will be skipped")
+            logger.info(f"⚠️  PDF not found: {pdf_path} — images will be skipped")
         elif fitz is None:
-            print("⚠️  PyMuPDF not installed — images will be skipped")
+            logger.info("⚠️  PyMuPDF not installed — images will be skipped")
         else:
             pdf_doc = fitz.open(str(pdf_path))
-            print(f"📄 Opened {pdf_path} ({len(pdf_doc)} pages)")
+            logger.info(f"📄 Opened {pdf_path} ({len(pdf_doc)} pages)")
 
     # Prepare images directory
     stem = json_path.stem
@@ -405,7 +405,7 @@ def run_json_to_md(
 
     images_dir_path = Path(str(images_dir_path))
     # Generate Markdown
-    print(f"📝 Generating Markdown (Language: {lang}) ...")
+    logger.info(f"📝 Generating Markdown (Language: {lang}) ...")
     markdown = json_to_markdown(
         data,
         pdf_doc=pdf_doc,
@@ -420,12 +420,12 @@ def run_json_to_md(
     out_path.write_text(markdown, encoding="utf-8")
 
     n_imgs = len(list(images_dir_path.glob("*.png"))) if images_dir_path.exists() else 0
-    print(f"\n💾 Markdown → {out_path}  ({len(markdown)} chars, {n_imgs} images)")
+    logger.info(f"\n💾 Markdown → {out_path}  ({len(markdown)} chars, {n_imgs} images)")
 
     if pdf_doc:
         pdf_doc.close()
 
-    print("✅ Done!")
+    logger.info("✅ Done!")
     return out_path
 
 
