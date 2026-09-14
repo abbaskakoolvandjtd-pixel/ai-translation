@@ -67,20 +67,28 @@ def list_user_jobs(
         "jobs": jobs,
     }
 
+# Get max file size from config (default 100MB)
+MAX_FILE_SIZE_MB = getattr(TranslationConfig, "MAX_UPLOAD_SIZE_MB", 100)
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+
 @router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...), context=Depends(verify_jwt_and_db)) -> Dict:
+async def upload_pdf(
+    file: UploadFile = File(..., description=f"PDF file to upload (max {MAX_FILE_SIZE_MB}MB)"),
+    context=Depends(verify_jwt_and_db)
+) -> Dict:
     """
     Upload a PDF file for translation.
     
     Args:
-        file: PDF file to upload
+        file: PDF file to upload (max {MAX_FILE_SIZE_MB}MB)
         context: Authentication context from JWT
         
     Returns:
         Dictionary with job_id and status
         
     Raises:
-        HTTPException: If file is not PDF or user lacks permission
+        HTTPException: If file is not PDF, too large, or user lacks permission
     """
     payload = context["payload"]
     uid = int(payload.get("uid"))
@@ -92,9 +100,29 @@ async def upload_pdf(file: UploadFile = File(...), context=Depends(verify_jwt_an
         logger.warning(f"User {uid} denied access to translation module")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="کاربر دسترسی ندارد.")
     
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
+    if not file.filename:
+        logger.warning(f"No filename provided")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="نام فایل نامعتبر است.")
+    
+    if not file.filename.lower().endswith(".pdf"):
         logger.warning(f"Invalid file type uploaded: {file.filename}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="فقط فایل‌های PDF مجاز هستند.")
+
+    # Check file size by reading content if size not available in header
+    file_size = 0
+    file_content = await file.read()
+    file_size = len(file_content)
+    
+    if file_size > MAX_FILE_SIZE_BYTES:
+        logger.warning(f"File too large: {file_size} bytes (max: {MAX_FILE_SIZE_BYTES} bytes)")
+        raise HTTPException(
+            status_code=status.HTTP_413_PAYLOAD_TOO_LARGE,
+            detail=f"فایل بسیار بزرگ است. حداکثر حجم مجاز {MAX_FILE_SIZE_MB} مگابایت است."
+        )
+    
+    if file_size == 0:
+        logger.warning(f"Empty file uploaded: {file.filename}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="فایل خالی است.")
 
     base_storage = getattr(TranslationConfig, "LOCAL_UPLOAD_PATH", "./uploads")
     user_dir = Path(base_storage) / "translations" / str(uid) / str(uuid.uuid4())
@@ -109,7 +137,7 @@ async def upload_pdf(file: UploadFile = File(...), context=Depends(verify_jwt_an
     
     try:
         with open(file_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+            f.write(file_content)
     except IOError as e:
         logger.error(f"Failed to save file {file_path}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save file")
@@ -117,8 +145,8 @@ async def upload_pdf(file: UploadFile = File(...), context=Depends(verify_jwt_an
         file.file.close()
 
     job_id = create_job(uid, file.filename, str(file_path))
-    logger.info(f"Job {job_id} created for user {uid}")
-    return {"job_id": job_id, "status": "PENDING", "message": "File uploaded. Worker will pick it up shortly."}
+    logger.info(f"Job {job_id} created for user {uid}, file size: {file_size} bytes")
+    return {"job_id": job_id, "status": "PENDING", "message": f"File uploaded ({file_size / (1024*1024):.2f}MB). Worker will pick it up shortly."}
 
 
 @router.get("/status/{job_id}")
