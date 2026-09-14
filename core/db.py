@@ -259,8 +259,6 @@ AND UpdatedAt < DATEADD(hour, ?, GETDATE())) or (Status not IN ('COMPLETED','FAI
     conn.close()
     return results
 
-    raise NotImplementedError("Implement this using your existing DB connection logic.")
-
 
 def reset_job_to_pending(job_id):
     """
@@ -281,5 +279,3 @@ def reset_job_to_pending(job_id):
     conn.commit()
     cursor.close()
     conn.close()
-
-    raise NotImplementedError("Implement this using your existing DB connection logic.")

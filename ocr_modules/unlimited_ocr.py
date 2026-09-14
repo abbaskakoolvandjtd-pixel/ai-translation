@@ -18,6 +18,7 @@ import json
 import time
 import base64
 import gc  # <-- Garbage collection to free memory between pages
+import os  # For environment variables
 import fitz  # PyMuPDF
 from pathlib import Path
 from io import BytesIO
@@ -30,8 +31,10 @@ from core.db import update_job_status
 # ──────────────────────────────────────────────
 # Config (Optimized for Maximum Precision)
 # ──────────────────────────────────────────────
-VLLM_URL      = "http://10.19.24.49:5090/v1"
+# Use environment variables for sensitive configuration
+VLLM_URL      = os.getenv("VLLM_URL", "http://10.19.24.49:5090/v1")
 MODEL_NAME    = "unlimited-ocr"
+API_KEY       = os.getenv("VLLM_API_KEY", "sk-N_j-qpRiMdEcN1bRhmnNiA")  # Fallback for backward compatibility
 PDF_PATH      = "../WDR 2026 Overview Booklet.pdf"
 OUTPUT_MD     = PDF_PATH.rsplit(".", 1)[0] + ".md"
 OUTPUT_JSON   = PDF_PATH.rsplit(".", 1)[0] + ".json"
@@ -42,7 +45,7 @@ MAX_TOKENS    = 10000 # Extremely high limit to prevent single-page truncation
 BATCH_SIZE    = 1     # FORCE single-page processing for max accuracy
 DEBUG         = False  # save annotated pages with bboxes drawn
 
-client = OpenAI(api_key="sk-N_j-qpRiMdEcN1bRhmnNiA", base_url=VLLM_URL, timeout=3600)
+client = OpenAI(api_key=API_KEY, base_url=VLLM_URL, timeout=3600)
 
 
 # ══════════════════════════════════════════════
