@@ -12,8 +12,13 @@ from core.db import create_job, get_job, get_job_for_download, get_jobs_for_user
 
 router = APIRouter(prefix="/translation/v1", tags=["Translation"])
 
+# ==============================================================================
+# CONSTANTS
+# ==============================================================================
+TRANSLATION_MODULE_ID = 92  # Module ID for translation service access control
 
-def _has_module_access(df_service, module_id: int = 92) -> bool:
+
+def _has_module_access(df_service, module_id: int = TRANSLATION_MODULE_ID) -> bool:
     """
     Returns True if the user has an 'access' action for the given module_id.
     Handles the situation where the module_id is missing gracefully.
@@ -50,7 +55,7 @@ def list_user_jobs(
 
     # ---- Permission check -------------------------------------------------
     df_service = get_user_permissions_for_service(user_id=uid, service_id=sid)
-    if not _has_module_access(df_service, 92):
+    if not _has_module_access(df_service, TRANSLATION_MODULE_ID):
         raise HTTPException(status_code=403, detail="User does not have access.")
 
     # ---- Fetch jobs --------------------------------------------------------
@@ -71,7 +76,7 @@ async def upload_pdf(file: UploadFile = File(...), context=Depends(verify_jwt_an
     sid = int(payload.get("sid"))
     df_service = get_user_permissions_for_service(user_id=uid, service_id=sid)
     print(df_service)
-    if not _has_module_access(df_service, 92):
+    if not _has_module_access(df_service, TRANSLATION_MODULE_ID):
         raise HTTPException(400, "کاربر دسترسی ندارد.")
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="فقط فایل‌های PDF مجاز هستند.")
@@ -92,11 +97,10 @@ async def upload_pdf(file: UploadFile = File(...), context=Depends(verify_jwt_an
 def get_status(job_id: str, context=Depends(verify_jwt_and_db)):
     payload = context["payload"]
     user_id = int(payload.get("uid"))
-    uid = int(payload.get("uid"))
     sid = int(payload.get("sid"))
-    df_service = get_user_permissions_for_service(user_id=uid, service_id=sid)
+    df_service = get_user_permissions_for_service(user_id=user_id, service_id=sid)
     print(df_service)
-    if not _has_module_access(df_service, 92):
+    if not _has_module_access(df_service, TRANSLATION_MODULE_ID):
         raise HTTPException(400, "کاربر دسترسی ندارد.")
     job = get_job(job_id, user_id)
     if not job:
@@ -108,11 +112,10 @@ def get_status(job_id: str, context=Depends(verify_jwt_and_db)):
 def download_file(job_id: str, context=Depends(verify_jwt_and_db)):
     payload = context["payload"]
     user_id = int(payload.get("uid"))
-    uid = int(payload.get("uid"))
     sid = int(payload.get("sid"))
-    df_service = get_user_permissions_for_service(user_id=uid, service_id=sid)
+    df_service = get_user_permissions_for_service(user_id=user_id, service_id=sid)
     print(df_service)
-    if not _has_module_access(df_service, 92):
+    if not _has_module_access(df_service, TRANSLATION_MODULE_ID):
         raise HTTPException(400, "کاربر دسترسی ندارد.")
     job = get_job_for_download(job_id, user_id)
     if not job:

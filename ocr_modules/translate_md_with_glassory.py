@@ -18,8 +18,9 @@ from core.db import update_job_status
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-BASE_URL = "http://10.19.24.49:5090/v1"
-API_KEY = "sk-N_j-qpRiMdEcN1bRhmnNiA"  # Must match config.yaml master_key
+# Use environment variables for sensitive configuration
+BASE_URL = os.getenv("VLLM_URL", "http://10.19.24.49:5090/v1")
+API_KEY = os.getenv("VLLM_API_KEY", "sk-N_j-qpRiMdEcN1bRhmnNiA")  # Must match config.yaml master_key
 
 MAX_OUTPUT_TOKENS = 30000
 INPUT_JSON = r"E:\Kakoolvand\pycharm_projects\markitdown_project\WDR 2026 Overview Booklet.json"
